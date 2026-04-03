@@ -94,19 +94,20 @@
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.5; // Умеренная яркость
+    renderer.toneMappingExposure = 1.8; // Чуть ярче
     
-    renderer.shadowMap.enabled = false;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     
     container.appendChild(renderer.domElement);
   
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 2;
-    controls.maxDistance = 8;
+    controls.minDistance = 1;
+    controls.maxDistance = 10;
     controls.target.set(0, 0, 0);
     controls.enablePan = true;
   
@@ -114,24 +115,30 @@
     // ☀️ СБАЛАНСИРОВАННОЕ ОСВЕЩЕНИЕ
     // ============================================
     
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
     scene.add(ambientLight);
   
-    const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
-    sunLight.position.set(-12, 3, 10);
+    const sunLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    sunLight.position.set(-15, 10, 10);
+    sunLight.castShadow = true;
     scene.add(sunLight);
   
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
-    fillLight.position.set(12, 5, 8);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    fillLight.position.set(15, 5, 8);
     scene.add(fillLight);
   
-    const topLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    const topLight = new THREE.DirectionalLight(0xffffff, 1.0);
     topLight.position.set(0, 20, 0);
     scene.add(topLight);
   
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    rimLight.position.set(0, 3, -15);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    rimLight.position.set(0, 5, -15);
     scene.add(rimLight);
+
+    // Добавим точечный свет для блеска деталей
+    const pointLight = new THREE.PointLight(0xffffff, 0.5);
+    pointLight.position.set(0, 2, 5);
+    scene.add(pointLight);
   };
   
   // Загрузка всех текстур
@@ -145,7 +152,7 @@
         textureLoader.load(
           props.texturePath,
           (texture) => {
-            texture.encoding = THREE.sRGBEncoding;
+            texture.colorSpace = THREE.SRGBColorSpace;
             texture.flipY = false;
             texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
             diffuseTexture = texture;
@@ -275,9 +282,9 @@
               roughnessMap: null
             });
   
-            // Encoding для цветной текстуры
+            // ColorSpace для цветной текстуры
             if (newMaterial.map) {
-              newMaterial.map.encoding = THREE.sRGBEncoding;
+              newMaterial.map.colorSpace = THREE.SRGBColorSpace;
             }
             
             // Для AO нужен второй UV канал
